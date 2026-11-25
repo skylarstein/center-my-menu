@@ -93,7 +93,7 @@ jobs:
 
           Download **Center-My-Menu.zip** for Apple silicon or Intel Macs. Unzip it and move **Center My Menu.app** to your preferred location.
 
-          This app is ad-hoc signed and is not notarized by Apple. macOS may block it from opening. Building from source remains an option.
+          This app is ad-hoc signed and is not notarized by Apple. macOS may block it from opening. If that happens, you may need to allow it in System Settings → Privacy & Security. Building from source remains an option.
 
           [Build log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
 
