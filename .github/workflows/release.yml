@@ -1,0 +1,118 @@
+name: Build release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check release prerequisites
+        env:
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          if [[ "$REPOSITORY_PRIVATE" == "true" ]]; then
+            echo "Make the repository public before building this attested release."
+            exit 1
+          fi
+          APP_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)
+          if [[ "$RELEASE_TAG" != "v$APP_VERSION" ]]; then
+            echo "Release tag must match the app version: v$APP_VERSION"
+            exit 1
+          fi
+          xcodebuild -version
+          swift --version
+
+      - name: Run core tests
+        run: swift test --configuration release --scratch-path build/release-tests
+
+      - name: Build the signed Release app
+        run: CONFIGURATION=Release ./scripts/build.sh
+
+      - name: Package the app and checksum
+        run: |
+          APP="build/xcode/Release/Center My Menu.app"
+          ARCHITECTURES=$(lipo -archs "$APP/Contents/MacOS/CenterMyMenu")
+          [[ " $ARCHITECTURES " == *" arm64 "* && " $ARCHITECTURES " == *" x86_64 "* ]]
+          mkdir -p build/release
+          ditto -c -k --sequesterRsrc --keepParent "$APP" build/release/Center-My-Menu.zip
+          cd build/release
+          shasum -a 256 Center-My-Menu.zip > SHA256SUMS.txt
+          ditto -x -k Center-My-Menu.zip verification
+          codesign --verify --deep --strict "verification/Center My Menu.app"
+          rm -rf verification
+
+      - name: Attest the downloadable ZIP
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: build/release/Center-My-Menu.zip
+
+      - name: Verify provenance and save the attestation
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$ATTESTATION_BUNDLE" build/release/Center-My-Menu.zip.sigstore.json
+          gh attestation verify build/release/Center-My-Menu.zip \
+            --bundle build/release/Center-My-Menu.zip.sigstore.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-digest "$GITHUB_SHA" \
+            --source-ref "$GITHUB_REF"
+
+      - name: Prepare release notes
+        run: |
+          cat > build/release/notes.md <<EOF
+          Built by GitHub Actions from commit [$GITHUB_SHA]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
+
+          Download **Center-My-Menu.zip** for Apple silicon or Intel Macs. Unzip it and move **Center My Menu.app** to your preferred location.
+
+          This app is ad-hoc signed and is not notarized by Apple. macOS may block it from opening. Building from source remains an option.
+
+          [Build log]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
+
+          Verify the ZIP with the GitHub CLI:
+
+          \`\`\`sh
+          gh attestation verify Center-My-Menu.zip --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml --source-digest $GITHUB_SHA
+          \`\`\`
+
+          The attestation identifies the build's source commit and workflow. It is not a safety review of the code. SHA256SUMS.txt also lets you check the download's checksum.
+          EOF
+
+      - name: Create a draft release
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --draft \
+            --title "Center My Menu $RELEASE_TAG" \
+            --notes-file build/release/notes.md \
+            build/release/Center-My-Menu.zip \
+            build/release/SHA256SUMS.txt \
+            build/release/Center-My-Menu.zip.sigstore.json
