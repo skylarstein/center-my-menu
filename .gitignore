@@ -1,0 +1,10 @@
+/AGENTS.md
+/.env
+/.env.*
+/.local/
+/.build/
+/build/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+.vscode/
